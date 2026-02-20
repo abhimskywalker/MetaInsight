@@ -4,3 +4,9 @@ developer_resources
 LICENSE
 CITATION.cff
 tests/testthat/saved_files
+^pyproject.toml$
+^src/metainsight
+^tests/python
+^\.python-version$
+^\.venv$
+

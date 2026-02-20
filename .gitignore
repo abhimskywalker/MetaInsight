@@ -10,3 +10,19 @@ debug*
 _modules
 inst/shiny/rsconnect
 .Renviron
+
+# Python / uv
+.python-version
+.venv
+venv/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+build/
+dist/
+*.egg-info/
+
