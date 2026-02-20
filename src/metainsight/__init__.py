@@ -6,12 +6,24 @@ in a progressive way so features can be ported module-by-module.
 """
 
 from .core import MetaInsightBundle, MetaInsightConfig, load_data, setup_configure
+from .setup import (
+    LoadedData,
+    ValidationResult,
+    clean_data,
+    setup_load,
+    validate_uploaded_data,
+)
 
 __all__ = [
     "MetaInsightBundle",
     "MetaInsightConfig",
     "load_data",
     "setup_configure",
+    "LoadedData",
+    "ValidationResult",
+    "clean_data",
+    "setup_load",
+    "validate_uploaded_data",
 ]
 
 __version__ = "0.1.0"
