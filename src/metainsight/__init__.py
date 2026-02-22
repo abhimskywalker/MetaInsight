@@ -5,11 +5,13 @@ MetaInsight workflows. The API mirrors the existing R package entry points
 in a progressive way so features can be ported module-by-module.
 """
 
-from .core import MetaInsightBundle, MetaInsightConfig, load_data, setup_configure
+from .core import MetaInsightBundle, MetaInsightConfig, load_data
 from .setup import (
+    ConfiguredData,
     LoadedData,
     ValidationResult,
     clean_data,
+    setup_configure,
     setup_load,
     validate_uploaded_data,
 )
@@ -19,10 +21,11 @@ __all__ = [
     "MetaInsightConfig",
     "load_data",
     "setup_configure",
+    "setup_load",
+    "ConfiguredData",
     "LoadedData",
     "ValidationResult",
     "clean_data",
-    "setup_load",
     "validate_uploaded_data",
 ]
 
