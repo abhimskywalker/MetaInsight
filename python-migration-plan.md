@@ -16,6 +16,8 @@
 - [x] Port input/validation layer:
   - `setup_load`
   - `validate_uploaded_data`
+  - `setup_configure` pipeline (treatment remapping, wrangling, connectivity,
+    and covariate metadata).
   - Basic default-data loading from `inst/extdata/`.
 - [ ] Add shared data models + typing (`Domain` layer).
 
