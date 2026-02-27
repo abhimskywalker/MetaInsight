@@ -55,6 +55,23 @@ class ConfiguredData:
 
 
 @dataclass(frozen=True)
+class ExcludedData:
+    """Result from :func:`setup_exclude`."""
+
+    treatments: pd.DataFrame
+    reference_treatment: str
+    connected_data: pd.DataFrame
+    covariate: dict
+    bugsnet: pd.DataFrame
+    freq: dict
+    outcome: str
+    outcome_measure: str
+    effects: str
+    ranking_option: str
+    seed: int | float
+
+
+@dataclass(frozen=True)
 class _ColumnDefinition:
     name: str
     required: bool
@@ -277,7 +294,10 @@ def _find_all_treatments(data: pd.DataFrame) -> List[str]:
         ]
         if not treatment_cols:
             return []
-        values = data[treatment_cols].stack(dropna=True).dropna().astype(str)
+        ordered: list[str] = []
+        for col in treatment_cols:
+            ordered.extend(data[col].dropna().astype(str).tolist())
+        values = pd.Series(ordered)
 
     # Preserve original order and uniqueness.
     return list(dict.fromkeys(values.tolist()))
@@ -287,6 +307,47 @@ def _create_treatment_ids(all_treatments: List[str]) -> pd.DataFrame:
     treatment_ids = pd.DataFrame({"Number": list(range(1, len(all_treatments) + 1)), "Label": all_treatments})
     treatment_ids["Label"] = treatment_ids["Label"].astype(str)
     return treatment_ids
+
+
+def _create_treatment_frame(all_names: List[str]) -> pd.DataFrame:
+    return pd.DataFrame({"Number": list(range(1, len(all_names) + 1)), "Label": all_names})
+
+
+def _upgrade_treatment_frame(data: pd.DataFrame, treatment_map: dict[int, str]) -> pd.DataFrame:
+    upgraded = data.copy()
+
+    def _convert(value: object) -> object:
+        if pd.isna(value):
+            return pd.NA
+
+        try:
+            treatment_id = int(float(value))
+        except (TypeError, ValueError):
+            return pd.NA
+
+        return treatment_map.get(treatment_id, pd.NA)
+
+    for column in [col for col in upgraded.columns if re.match(r"^T(\.[0-9]+)?$", str(col))]:
+        upgraded[column] = upgraded[column].apply(_convert)
+
+    return upgraded.drop(columns=["StudyID"], errors="ignore")
+
+
+def _max_treatment_id_from_data(data: pd.DataFrame) -> int:
+    treatment_cols = [c for c in data.columns if re.match(r"^T(\.[0-9]+)?$", str(c))]
+    if not treatment_cols:
+        return 0
+
+    treatment_values = pd.concat([data[col].dropna() for col in treatment_cols], ignore_index=True)
+
+    values: List[int] = []
+    for value in treatment_values.tolist():
+        try:
+            values.append(int(float(value)))
+        except (TypeError, ValueError):
+            continue
+
+    return max(values) if values else 0
 
 
 def _reorder_treatments(treatments: pd.DataFrame, reference_treatment: str) -> pd.DataFrame:
@@ -302,6 +363,45 @@ def _reorder_treatments(treatments: pd.DataFrame, reference_treatment: str) -> p
     out["Label"] = pd.Categorical(out["Label"], categories=reordered, ordered=True)
     out = out.sort_values("Label").reset_index(drop=True)
     out["Number"] = range(1, len(out) + 1)
+    return out
+
+
+def _reorder_treatments_with_reference(treatments: pd.DataFrame, reference_treatment: str) -> pd.DataFrame:
+    labels = list(treatments["Label"])
+    if reference_treatment in labels:
+        ordered = [reference_treatment] + [label for label in labels if label != reference_treatment]
+    else:
+        ordered = labels
+
+    out = treatments.copy()
+    out["Label"] = pd.Categorical(out["Label"], categories=ordered, ordered=True)
+    out = out.sort_values("Label").reset_index(drop=True)
+    out["Number"] = range(1, len(out) + 1)
+    return out
+
+
+def _reinstate_treatment_ids(data: pd.DataFrame, treatment_names: pd.DataFrame) -> pd.DataFrame:
+    mapping = {int(row.Number): row.Label for row in treatment_names.itertuples(index=False)}
+    out = data.copy()
+
+    def _restore(value: object) -> object:
+        if pd.isna(value):
+            return pd.NA
+
+        try:
+            key = int(float(value))
+        except (TypeError, ValueError):
+            return pd.NA
+        return mapping.get(key, pd.NA)
+
+    if "T" in out.columns:
+        out["T"] = out["T"].apply(_restore)
+        out["T"] = out["T"].astype(object)
+    else:
+        for column in [col for col in out.columns if re.match(r"^T(\.[0-9]+)?$", str(col))]:
+            out[column] = out[column].apply(_restore)
+            out[column] = out[column].astype(object)
+
     return out
 
 
@@ -612,10 +712,16 @@ def _sort_by_studyid_then_treatment(data: pd.DataFrame, outcome: str) -> pd.Data
 def _reorder_columns(data: pd.DataFrame, outcome: str) -> pd.DataFrame:
     ordered: List[str] = ["StudyID", "Study"]
 
-    if outcome == "continuous":
-        ordered.extend(["T", "N", "Mean", "SD"])
+    if "T.1" in data.columns or "N.1" in data.columns or "Mean.1" in data.columns:
+        if outcome == "continuous":
+            ordered.extend(["T.1", "N.1", "Mean.1", "SD.1"])
+        else:
+            ordered.extend(["T.1", "R.1", "N.1"])
     else:
-        ordered.extend(["T", "R", "N"])
+        if outcome == "continuous":
+            ordered.extend(["T", "N", "Mean", "SD"])
+        else:
+            ordered.extend(["T", "R", "N"])
 
     base_cols = set(ordered)
     extra_cols = [c for c in data.columns if c not in base_cols]
@@ -665,6 +771,18 @@ def _wide_to_long(data: pd.DataFrame, outcome: str) -> pd.DataFrame:
         for prefix in prefixes
     }
 
+    if "StudyID" in data.columns:
+        study_id_map = {
+            str(row["Study"]): str(row["StudyID"])
+            for _, row in data.iterrows()
+            if pd.notna(row.get("StudyID"))
+        }
+    else:
+        study_id_map = {
+            str(study): idx + 1
+            for idx, study in enumerate(dict.fromkeys(data["Study"].astype(str)))
+        }
+
     max_arms = 0
     for values in cols_by_study.values():
         if not values:
@@ -674,22 +792,25 @@ def _wide_to_long(data: pd.DataFrame, outcome: str) -> pd.DataFrame:
     long_rows = []
     for _, row in data.iterrows():
         for arm in range(1, max_arms + 1):
-            arm_suffix = f".{arm}" if arm > 1 else ""
-            extracted = {"Study": row.get("Study")}
+            arm_suffix = f".{arm}"
+            extracted = {
+                "Study": row.get("Study"),
+                "StudyID": study_id_map.get(str(row.get("Study")), pd.NA),
+            }
 
             for prefix in prefixes:
                 exact = f"{prefix}{arm_suffix}"
                 if exact in row and pd.notna(row.get(exact)):
                     extracted[prefix] = row.get(exact)
                 elif arm == 1 and prefix in row:
-                    # Handle 1-arm un-suffixed columns.
+                    # Handle legacy wide format without suffixed first arm.
                     extracted[prefix] = row.get(prefix)
                 else:
                     extracted[prefix] = pd.NA
 
             # Carry through quality/covariate columns if present
             for column in data.columns:
-                if column.startswith("Study") or re.match(r"^[TNRMSD]|^covar\.|^rob", str(column)):
+                if column.startswith("Study") or re.match(r"^[TNRMSD]|^rob", str(column)):
                     continue
                 if column == "StudyID":
                     continue
@@ -702,7 +823,7 @@ def _wide_to_long(data: pd.DataFrame, outcome: str) -> pd.DataFrame:
     long_data = pd.DataFrame(long_rows)
 
     # Reorder required columns to keep stable.
-    cols = ["Study", "T"]
+    cols = ["Study", "StudyID", "T"]
     if outcome == "continuous":
         cols.extend(["Mean", "SD", "N"])
     else:
@@ -716,7 +837,6 @@ def _long_to_wide(data: pd.DataFrame, outcome: str) -> pd.DataFrame:
     if _find_data_shape(data) != "long":
         return data.copy()
 
-    # Stable assignment of wide arm columns by arm position within each study.
     study_treatments = data.sort_values(["Study", "T"]).copy()
     study_treatments["row_index"] = study_treatments.groupby("Study").cumcount() + 1
 
@@ -725,38 +845,30 @@ def _long_to_wide(data: pd.DataFrame, outcome: str) -> pd.DataFrame:
     else:
         measure_cols = ["R", "N"]
 
-    wide = pd.DataFrame()
+    studies = list(study_treatments["Study"].drop_duplicates())
+    wide = pd.DataFrame({"Study": studies})
     if "StudyID" in study_treatments.columns:
-        wide["StudyID"] = study_treatments.groupby("Study")["StudyID"].first()
-    wide["Study"] = study_treatments.groupby("Study")["Study"].first()
+        study_id_map = study_treatments.groupby("Study")["StudyID"].first()
+        wide["StudyID"] = wide["Study"].map(study_id_map)
 
-    for offset, prefix in enumerate(measure_cols, start=1):
-        pass
-
-    for i, col in enumerate(measure_cols):
+    for col in measure_cols:
         pivot = study_treatments.pivot(index="Study", columns="row_index", values=col)
-        pivot.columns = [f"{col}" if int(col_idx) == 1 else f"{col}.{col_idx}" for col_idx in pivot.columns]
-        wide = pd.concat([wide, pivot.reset_index(drop=True)], axis=1) if wide.empty else wide.join(pivot, how="outer")
+        pivot.columns = [f"{col}.{int(col_idx)}" for col_idx in pivot.columns]
+        wide = wide.merge(pivot.reset_index(), on="Study", how="left")
 
-    # Treatment column is named by design, so process separately.
+    # Treatment columns are mapped separately.
     t_pivot = study_treatments.pivot(index="Study", columns="row_index", values="T")
-    t_pivot.columns = ["T" if int(idx) == 1 else f"T.{idx}" for idx in t_pivot.columns]
-    if wide.empty:
-        wide = pd.DataFrame(index=study_treatments["Study"].drop_duplicates())
-        wide["Study"] = study_treatments.groupby("Study")["Study"].first()
-    wide = wide.join(t_pivot)
+    t_pivot.columns = [f"T.{int(idx)}" for idx in t_pivot.columns]
+    wide = wide.merge(t_pivot.reset_index(), on="Study", how="left")
 
-    # Keep order in a stable way.
-    wide = wide.reset_index(drop=True)
-    # Preserve covariates/rob columns from any study row.
+    # Preserve covariate/other auxiliary columns from any study row.
     extra_cols = [
         col for col in study_treatments.columns
         if col not in {"Study", "StudyID", "T", "row_index", "N", "Mean", "SD", "R"}
     ]
     for col in extra_cols:
-        wide[col] = study_treatments.groupby("Study")[col].first()
+        wide[col] = wide["Study"].map(study_treatments.groupby("Study")[col].first())
 
-    # Reorder columns using helper.
     return _reorder_columns(wide, outcome)
 
 
@@ -966,6 +1078,61 @@ def _build_freq_payload(non_cov: pd.DataFrame, outcome: str, treatments: pd.Data
     }
 
 
+def setup_upgrade(
+    data_path: str,
+    treatments: str,
+    logger: Callable[[str], None] | None = None,
+) -> pd.DataFrame:
+    """Upgrade legacy treatment IDs in a legacy-format dataset to labels."""
+
+    if not isinstance(data_path, (str, Path)):
+        raise TypeError("data_path must be of class character")
+
+    if not isinstance(treatments, str):
+        raise TypeError("treatments must be of class character")
+
+    if not re.fullmatch(r"^[a-zA-Z_]+(,[a-zA-Z_]+)*$", treatments):
+        raise ValueError("The treatment names must only contain words separated by commas")
+
+    path = Path(data_path)
+    if path.suffix.lower() != ".csv":
+        raise ValueError("data_path must link to either a .csv file")
+
+    if not path.exists():
+        raise FileNotFoundError("The specified file does not exist")
+
+    data = pd.read_csv(path)
+    unnamed = [col for col in data.columns if str(col).startswith("Unnamed:")]
+    if unnamed:
+        data = data.drop(columns=unnamed)
+    data = clean_data(data)
+
+    treatment_names = [name.strip() for name in treatments.split(",")]
+    if any(name == "" for name in treatment_names):
+        raise ValueError("The treatment names must only contain words separated by commas")
+
+    input_treatment_count = len(treatment_names)
+    data_treatment_count = _max_treatment_id_from_data(data)
+
+    if input_treatment_count != data_treatment_count:
+        message = (
+            f"Your input data contains {input_treatment_count} treatments "
+            f"but your treatment list contains {data_treatment_count} treatments"
+        )
+        if logger is None:
+            raise ValueError(message)
+        logger(message)
+
+    treatment_frame = _create_treatment_frame(treatment_names)
+    mapping = {int(row.Number): str(row.Label) for row in treatment_frame.itertuples(index=False)}
+    upgraded = _upgrade_treatment_frame(data, mapping)
+
+    if logger is not None:
+        logger("Your data has successfully been upgraded.")
+
+    return upgraded
+
+
 def setup_load(
     data_path: str | Path | None = None,
     outcome: str = "continuous",
@@ -1163,4 +1330,118 @@ def setup_configure(
         effects=effects,
         ranking_option=ranking_option,
         seed=seed,
+    )
+
+
+def setup_exclude(
+    configured_data: ConfiguredData,
+    exclusions: list[str] | None = None,
+    logger: Callable[[str], None] | None = None,
+) -> ExcludedData:
+    """Return a subset of connected studies after excluding selected studies."""
+
+    if not isinstance(configured_data, ConfiguredData):
+        raise TypeError("configured_data must be of class configured_data")
+
+    if exclusions is None:
+        exclusions = []
+    elif not isinstance(exclusions, list):
+        raise TypeError("exclusions must be of class character")
+    elif any(not isinstance(study, str) for study in exclusions):
+        raise TypeError("exclusions must be of class character")
+
+    study_labels = set(configured_data.connected_data["Study"].astype(str).tolist())
+    invalid = [s for s in exclusions if s not in study_labels]
+    if invalid:
+        raise ValueError("exclusions must in the present in the loaded data")
+
+    if exclusions:
+        reduced = configured_data.connected_data[~configured_data.connected_data["Study"].astype(str).isin(exclusions)].copy()
+    else:
+        reduced = configured_data.connected_data.copy()
+
+    if reduced.empty:
+        raise ValueError("You have excluded all the studies")
+
+    labeled = _reinstate_treatment_ids(reduced, configured_data.treatments)
+
+    treatments_present = configured_data.treatments[
+        configured_data.treatments["Label"].isin(set(labeled["T"].dropna().astype(str)))
+    ]
+
+    reference_treatment = configured_data.reference_treatment
+    if reference_treatment not in treatments_present["Label"].tolist():
+        # Reference treatment is no longer represented; choose the first remaining treatment.
+        if len(treatments_present) == 0:
+            raise ValueError("You have excluded all the studies")
+        reference_treatment = str(treatments_present["Label"].iloc[0])
+        if logger is not None:
+            logger(f"Reference treatment has been changed to {reference_treatment}")
+
+    treatments = _reorder_treatments_with_reference(
+        treatments_present.reset_index(drop=True),
+        reference_treatment,
+    )
+
+    connected_treatments = _replace_treatment_ids(labeled, treatments)
+
+    if "Study" in connected_treatments.columns:
+        study_labels_in_data = set(connected_treatments["Study"].astype(str))
+        if study_labels_in_data:
+            filtered = connected_treatments[connected_treatments["Study"].astype(str).isin(study_labels_in_data)]
+        else:
+            filtered = connected_treatments
+    else:
+        filtered = connected_treatments
+
+    # Ensure data remains connected to reference treatment.
+    connected_studies, _ = _identify_subnetworks(filtered, treatments, reference_treatment)
+    connected_data = filtered[filtered["Study"].astype(str).isin(connected_studies)]
+
+    if connected_data.empty:
+        raise ValueError("You have excluded all the studies")
+
+    if set(labeled["Study"].astype(str)) != set(connected_data["Study"].astype(str)):
+        if logger is not None:
+            disconnected = sorted(study_labels - set(connected_data["Study"].astype(str)))
+            if disconnected:
+                logger("The uploaded data comprises a disconnected network. "
+                       "Only the subnetwork containing the reference treatment "
+                       f"({reference_treatment}) will be displayed and disconnected studies are shown in the logger.")
+                logger("Disconnected studies: " + ",".join(disconnected))
+
+    non_covariate_data = _remove_covariates(connected_data)
+
+    covariate = {}
+    covars = _find_covariate_columns(connected_data)
+    if covars:
+        covariate_column = covars[0]
+        covariate = {
+            "column": covariate_column,
+            "name": str(covariate_column).replace("covar.", ""),
+            "type": _infer_covariate_type(connected_data[covariate_column]),
+        }
+
+    bugsnet = _build_bugsnet(connected_data, configured_data.outcome, treatments)
+    freq = _build_freq_payload(
+        non_cov=non_covariate_data,
+        outcome=configured_data.outcome,
+        treatments=treatments,
+        outcome_measure=configured_data.outcome_measure,
+        effects=configured_data.effects,
+        reference_treatment=reference_treatment,
+    )
+
+    return ExcludedData(
+        treatments=treatments.reset_index(drop=True),
+        reference_treatment=reference_treatment,
+        connected_data=connected_data.reset_index(drop=True),
+        covariate=covariate,
+        bugsnet=bugsnet,
+        freq=freq,
+        outcome=configured_data.outcome,
+        outcome_measure=configured_data.outcome_measure,
+        effects=configured_data.effects,
+        ranking_option=configured_data.ranking_option,
+        seed=configured_data.seed,
     )

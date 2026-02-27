@@ -18,8 +18,27 @@
   - `validate_uploaded_data`
   - `setup_configure` pipeline (treatment remapping, wrangling, connectivity,
     and covariate metadata).
+  - `frequentist` payload helpers (`contrast_form`, `label_matching`, `frequentist`).
   - Basic default-data loading from `inst/extdata/`.
+- [x] Port network helpers:
+  - `create_graph`, `identify_subnetworks`, `is_nodesplittable`.
+  - treatment extraction helpers for long/wide and study-level membership queries.
+- [x] Add `setup_exclude` port and `ExcludedData` output schema with exclusion workflow.
+- [x] Port `covariate` directness/covariate-regression primitives:
+  - `calculate_directness` (R `CalculateDirectness` parity checks).
+  - `calculate_credible_regions` (R `CalculateCredibleRegions` scaffold).
+  - `covariate_regression` orchestration helper.
 - [ ] Add shared data models + typing (`Domain` layer).
+- [x] Add baseline-model scaffolding with deterministic outputs for:
+  - `baseline_model`, `baseline_regression`, `baseline_summary`, `baseline_forest`, `baseline_deviance`, `baseline_comparison`.
+- [x] Add deterministic baseline/covariate presentation helpers and ranking/plot scaffolds:
+  - `metaregression_plot`, `baseline_ranking`, `baseline_results`, `baseline_details`, `baseline_mcmc`, `baseline_comparison` matrix-style output and plotting helpers.
+  - Covariate compatibility aliases (`covariate_ranking`, `covariate_results`, `covariate_details`, `covariate_mcmc`) are wired.
+  - Bayesian-named compatibility aliases added (`bayes_ranking`, `bayes_results`, `bayes_details`, `bayes_mcmc`).
+  - Additional compatibility scaffolds added for helper functions (`baseline_forest_limits`, `format_baseline_forest`, `bayes_compare`, `bayes_forest`, `bayes_deviance`, `covariate_forest`, `covariate_deviance`, `covariate_comparison`).
+  - Added freq-style compatibility helpers (`freq_compare`, `freq_forest`, `freq_forest_limits`, `freq_forest_annotation`, `freq_inconsistent`, `freq_summary`).
+  - Added nodesplitting compatibility helpers (`bayes_nodesplit`, `bayes_nodesplit_plot`).
+  - Added support for `ExcludedData` consumption in selected helpers and validation paths (`freq_*`, `baseline_*`, `covariate` checks).
 
 ### Phase 2 — Deterministic analysis kernels
 - Implement pure functions first (statistically deterministic and testable):

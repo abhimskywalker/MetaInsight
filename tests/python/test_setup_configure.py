@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from metainsight.setup import ConfiguredData, LoadedData, setup_configure, setup_load
+from metainsight import ConfiguredData, LoadedData, setup_configure, setup_load
 
 
 _TEST_DATA_DIR = Path(__file__).resolve().parents[1] / "testthat" / "data"
@@ -12,10 +12,8 @@ _TEST_DATA_DIR = Path(__file__).resolve().parents[1] / "testthat" / "data"
 def _load_binary() -> LoadedData:
     return setup_load(data_path=_TEST_DATA_DIR / "Binary_long.csv", outcome="binary")
 
-
 def _load_continuous() -> LoadedData:
     return setup_load(data_path=_TEST_DATA_DIR / "Cont_long.csv", outcome="continuous")
-
 
 def _load_continuous_with_cov() -> LoadedData:
     return setup_load(data_path=_TEST_DATA_DIR / "Cont_long_continuous_cov.csv", outcome="continuous")
@@ -234,3 +232,28 @@ def test_setup_configure_covariate_detection():
         seed=999,
     )
     assert result_without_cov.covariate == {}
+
+
+def test_setup_configure_handles_wide_data_and_studyid_ordering() -> None:
+    loaded = setup_load(
+        data_path=_TEST_DATA_DIR / "continuous_wide_disconnected.csv",
+        outcome="continuous",
+    )
+
+    result = setup_configure(
+        loaded,
+        reference_treatment="A",
+        effects="random",
+        outcome_measure="MD",
+        ranking_option="good",
+        seed=123,
+    )
+
+    assert "StudyID" in result.wrangled_data.columns
+    assert "T.1" in result.wrangled_data.columns
+    assert "T.2" in result.wrangled_data.columns
+    assert len(result.disconnected_indices) == 3
+    # wide inputs are re-ordered through long->wide conversion in setup_configure
+    # the output should preserve expected identifier columns
+    assert list(result.connected_data["Study"].unique()) == ["Cinque", "Deux", "Six", "Three", "Uno"]
+    assert result.connected_data.shape[0] < result.wrangled_data.shape[0]
